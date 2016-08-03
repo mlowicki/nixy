@@ -18,10 +18,12 @@ import (
 )
 
 type App struct {
-	Tasks  []string
-	Labels map[string]string
-	Env    map[string]string
-	Hosts  []string
+	Tasks    []string
+	Labels   map[string]string
+	Env      map[string]string
+	Hosts    []string
+	TCPTasks map[int64][]string
+	UDPTasks map[int64][]string
 }
 
 type Config struct {

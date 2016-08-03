@@ -37,10 +37,15 @@ type MarathonTasks struct {
 
 type MarathonApps struct {
 	Apps []struct {
-		Id           string            `json:"id"`
-		Labels       map[string]string `json:"labels"`
-		Env          map[string]string `json:"env"`
-		HealthChecks []interface{}     `json:"healthChecks"`
+		Id              string            `json:"id"`
+		Labels          map[string]string `json:"labels"`
+		Env             map[string]string `json:"env"`
+		HealthChecks    []interface{}     `json:"healthChecks"`
+		PortDefinitions []struct {
+			Port     int64             `json:"port"`
+			Protocol string            `json:"protocol"`
+			Labels   map[string]string `json:"labels"`
+		} `json:"portDefinitions"`
 	} `json:"apps"`
 }
 
@@ -288,17 +293,17 @@ func syncApps(jsontasks *MarathonTasks, jsonapps *MarathonApps) {
 	config.Lock()
 	defer config.Unlock()
 	config.Apps = make(map[string]App)
-	for _, app := range jsonapps.Apps {
+	for _, marathonApp := range jsonapps.Apps {
 	OUTER:
 		for _, task := range jsontasks.Tasks {
-			if task.AppId != app.Id {
+			if task.AppId != marathonApp.Id {
 				continue
 			}
 			// lets skip tasks that does not expose any ports.
 			if len(task.Ports) == 0 {
 				continue
 			}
-			if len(app.HealthChecks) > 0 {
+			if len(marathonApp.HealthChecks) > 0 {
 				if len(task.HealthCheckResults) == 0 {
 					// this means tasks is being deployed but not yet monitored as alive. Assume down.
 					continue
@@ -315,36 +320,33 @@ func syncApps(jsontasks *MarathonTasks, jsonapps *MarathonApps) {
 					continue
 				}
 			}
-			if s, ok := config.Apps[app.Id]; ok {
-				s.Tasks = append(s.Tasks, task.Host+":"+strconv.FormatInt(task.Ports[0], 10))
-				config.Apps[app.Id] = s
-			} else {
-				var newapp = App{}
-				newapp.Tasks = []string{task.Host + ":" + strconv.FormatInt(task.Ports[0], 10)}
-				if s, ok := app.Labels["subdomain"]; ok {
+
+			if _, ok := config.Apps[marathonApp.Id]; !ok {
+				app := App{}
+				if s, ok := marathonApp.Labels["subdomain"]; ok {
 					hosts := strings.Split(s, " ")
 					for _, host := range hosts {
-						newapp.Hosts = append(newapp.Hosts, host)
+						app.Hosts = append(app.Hosts, host)
 					}
-				} else if s, ok := app.Labels["moxy_subdomain"]; ok {
+				} else if s, ok := marathonApp.Labels["moxy_subdomain"]; ok {
 					// to be compatible with moxy
 					hosts := strings.Split(s, " ")
 					for _, host := range hosts {
-						newapp.Hosts = append(newapp.Hosts, host)
+						app.Hosts = append(app.Hosts, host)
 					}
 				} else {
 					// Return app id where '/' are replaced with '.'.
 					// Needed if directories are used.
-					fields := strings.FieldsFunc(app.Id,
+					fields := strings.FieldsFunc(marathonApp.Id,
 						func(c rune) bool { return c == '/' })
-					newapp.Hosts = append(newapp.Hosts, strings.Join(fields, "."))
+					app.Hosts = append(app.Hosts, strings.Join(fields, "."))
 				}
 				for _, confapp := range config.Apps {
 					for _, host := range confapp.Hosts {
-						for _, newhost := range newapp.Hosts {
+						for _, newhost := range app.Hosts {
 							if newhost == host {
 								logger.WithFields(logrus.Fields{
-									"app":       app.Id,
+									"app":       marathonApp.Id,
 									"subdomain": host,
 								}).Warn("duplicate subdomain label, ignoring app")
 								continue OUTER
@@ -352,10 +354,41 @@ func syncApps(jsontasks *MarathonTasks, jsonapps *MarathonApps) {
 						}
 					}
 				}
-				newapp.Labels = app.Labels
-				newapp.Env = app.Env
-				config.Apps[app.Id] = newapp
+				app.Labels = marathonApp.Labels
+				app.Env = marathonApp.Env
+				app.UDPTasks = make(map[int64][]string, 0)
+				app.TCPTasks = make(map[int64][]string, 0)
+				config.Apps[marathonApp.Id] = app
 			}
+
+			app := config.Apps[marathonApp.Id]
+
+			for index, taskPort := range task.Ports {
+				if index >= len(marathonApp.PortDefinitions) {
+					// Can happen while changing definition of ports
+					// in Marathon.
+					logger.Warn("Port definitions index out of range")
+					break
+				}
+
+				portDefinition := marathonApp.PortDefinitions[index]
+				protocol := portDefinition.Protocol
+				port := portDefinition.Port
+				address := task.Host + ":" + strconv.FormatInt(taskPort, 10)
+
+				if strings.Contains(protocol, "udp") {
+					app.UDPTasks[port] = append(app.UDPTasks[port], address)
+				}
+
+				if strings.Contains(protocol, "tcp") {
+					if value, ok := portDefinition.Labels["NIXY_HTTP"]; !ok || value == "1" {
+						app.Tasks = append(app.Tasks, address)
+					} else {
+						app.TCPTasks[port] = append(app.TCPTasks[port], address)
+					}
+				}
+			}
+			config.Apps[marathonApp.Id] = app
 		}
 	}
 }
