@@ -381,7 +381,7 @@ func syncApps(jsontasks *MarathonTasks, jsonapps *MarathonApps) {
 				}
 
 				if strings.Contains(protocol, "tcp") {
-					if value, ok := portDefinition.Labels["NIXY_HTTP"]; !ok || value == "1" {
+					if value, ok := portDefinition.Labels["NIXY_HTTP"]; ok && value == "1" {
 						app.Tasks = append(app.Tasks, address)
 					} else {
 						app.TCPTasks[port] = append(app.TCPTasks[port], address)
